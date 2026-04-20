@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Reports and output
+report.json
+pdf_report.json
+
+# PDFs (potentially large/private)
+*.pdf
+
+# Environment
+.env
+.env.*
+
+# Testing / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude settings
+.claude/
