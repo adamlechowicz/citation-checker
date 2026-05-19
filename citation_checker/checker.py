@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Callable, Optional
 
-from .classifier import is_grey_literature, is_web_verifiable
+from .classifier import is_grey_literature, is_web_verifiable, likely_book_publisher
 from .fuzzy import compare_records
 from .http_client import CitationHttpClient, CitationHttpError
 from .models import (
@@ -81,18 +81,8 @@ async def _check(
 ) -> VerificationResult:
     warnings: list[str] = []
 
-    # Guard: not enough metadata to search
-    if not entry.title and not entry.authors:
-        return VerificationResult(
-            entry_key=entry.key,
-            status=VerificationStatus.UNVERIFIABLE,
-            strategy=VerificationStrategy.NONE,
-            remote_record=None,
-            scores=None,
-            url_reachable=None,
-            error_message=None,
-            warnings=["No title or authors — cannot verify"],
-        )
+    if not _has_verifiable_metadata(entry):
+        return _unverifiable_result(entry.key)
 
     remote: Optional[RemoteRecord] = None
     strategy = VerificationStrategy.NONE
@@ -112,30 +102,34 @@ async def _check(
             warnings.append(f"DOI {entry.doi!r} not found in CrossRef; trying title search")
             strategy = VerificationStrategy.NONE
             remote = await _title_search(entry, client, openalex_key, warnings)
-            strategy = _last_title_strategy(remote, warnings)
+            strategy = _last_title_strategy(remote)
 
     # ------------------------------------------------------------------ #
     # Strategy B: arXiv eprint lookup                                     #
     # ------------------------------------------------------------------ #
     elif _is_arxiv(entry):
         strategy = VerificationStrategy.ARXIV
+        arxiv_lookup_failed = False
         try:
             remote = await arxiv.lookup_by_eprint(entry.eprint, client)  # type: ignore[arg-type]
         except CitationHttpError as exc:
-            return _error_result(entry.key, strategy, exc)
+            warnings.append(f"arXiv lookup failed ({exc}); trying title search")
+            arxiv_lookup_failed = True
+            remote = None
 
         if remote is None:
-            warnings.append(f"arXiv eprint {entry.eprint!r} not found; trying title search")
+            if not arxiv_lookup_failed:
+                warnings.append(f"arXiv eprint {entry.eprint!r} not found; trying title search")
             strategy = VerificationStrategy.NONE
             remote = await _title_search(entry, client, openalex_key, warnings)
-            strategy = _last_title_strategy(remote, warnings)
+            strategy = _last_title_strategy(remote)
 
     # ------------------------------------------------------------------ #
     # Strategy C: title + author search                                   #
     # ------------------------------------------------------------------ #
     elif entry.title:
         remote = await _title_search(entry, client, openalex_key, warnings)
-        strategy = _last_title_strategy(remote, warnings)
+        strategy = _last_title_strategy(remote)
 
     # ------------------------------------------------------------------ #
     # Strategy D: web title verification for news / media URLs            #
@@ -160,25 +154,67 @@ async def _check(
     # Determine final status                                              #
     # ------------------------------------------------------------------ #
     if remote is None:
-        if is_grey_literature(entry):
-            warnings.append(
-                "Likely software, dataset, or web resource — not expected in academic databases"
-            )
-            status = VerificationStatus.GREY_LITERATURE
-        else:
-            status = VerificationStatus.NOT_FOUND
-        return VerificationResult(
-            entry_key=entry.key,
-            status=status,
-            strategy=strategy,
-            remote_record=None,
-            scores=None,
-            url_reachable=url_reachable,
-            error_message=None,
-            warnings=warnings,
-        )
+        return _missing_result(entry, strategy, url_reachable, warnings)
 
-    # Warn if author list is drastically truncated in bib file
+    return _matched_result(entry, strategy, remote, url_reachable, warnings)
+
+
+def _has_verifiable_metadata(entry: BibEntry) -> bool:
+    """Return True if any field can drive direct lookup or search."""
+    return bool(entry.title or entry.authors or entry.doi or entry.eprint)
+
+
+def _unverifiable_result(key: str) -> VerificationResult:
+    return VerificationResult(
+        entry_key=key,
+        status=VerificationStatus.UNVERIFIABLE,
+        strategy=VerificationStrategy.NONE,
+        remote_record=None,
+        scores=None,
+        url_reachable=None,
+        error_message=None,
+        warnings=["Entry did not parse in a verifiable fashion"],
+    )
+
+
+def _missing_result(
+    entry: BibEntry,
+    strategy: VerificationStrategy,
+    url_reachable: Optional[bool],
+    warnings: list[str],
+) -> VerificationResult:
+    if is_grey_literature(entry):
+        warnings.append(
+            "Likely software, dataset, or web resource — not expected in academic databases"
+        )
+        status = VerificationStatus.GREY_LITERATURE
+    else:
+        status = VerificationStatus.NOT_FOUND
+        publisher = likely_book_publisher(entry)
+        if publisher:
+            warnings.append(
+                f"Publisher '{publisher}' detected — may be a book not indexed in academic databases"
+            )
+
+    return VerificationResult(
+        entry_key=entry.key,
+        status=status,
+        strategy=strategy,
+        remote_record=None,
+        scores=None,
+        url_reachable=url_reachable,
+        error_message=None,
+        warnings=warnings,
+    )
+
+
+def _matched_result(
+    entry: BibEntry,
+    strategy: VerificationStrategy,
+    remote: RemoteRecord,
+    url_reachable: Optional[bool],
+    warnings: list[str],
+) -> VerificationResult:
     if entry.authors and remote.authors:
         if len(remote.authors) > len(entry.authors) * 2 and len(remote.authors) > 3:
             warnings.append(
@@ -243,9 +279,7 @@ async def _title_search(
     return remote
 
 
-def _last_title_strategy(
-    remote: Optional[RemoteRecord], warnings: list[str]
-) -> VerificationStrategy:
+def _last_title_strategy(remote: Optional[RemoteRecord]) -> VerificationStrategy:
     if remote is None:
         return VerificationStrategy.CROSSREF_SEARCH
     if remote.source == "openalex":

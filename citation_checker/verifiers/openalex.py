@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..http_client import CitationHttpClient, CitationHttpError
 from ..models import RemoteRecord
+from ._matching import best_title_match
 
 log = logging.getLogger(__name__)
 
@@ -19,8 +20,6 @@ async def search_by_title(
     api_key: Optional[str] = None,
 ) -> Optional[RemoteRecord]:
     """Search OpenAlex by title. Returns best-matching record or None."""
-    from ..fuzzy import normalize_string, TITLE_THRESHOLD
-
     params: dict = {
         "search": title,
         "per-page": 5,
@@ -39,22 +38,9 @@ async def search_by_title(
     if not results:
         return None
 
-    norm_local = normalize_string(title)
-    best_record: Optional[RemoteRecord] = None
-    best_score: float = -1.0
-
-    for work in results:
-        record = _parse_work(work)
-        if record.title is None:
-            continue
-        score = __import__('rapidfuzz').fuzz.ratio(
-            norm_local, normalize_string(record.title)
-        )
-        if score > best_score:
-            best_score = score
-            best_record = record
-
-    if best_score >= TITLE_THRESHOLD and best_record is not None:
+    records = (_parse_work(work) for work in results)
+    best_record, best_score = best_title_match(title, records)
+    if best_record is not None:
         log.debug("OpenAlex matched (score=%.1f): %s", best_score, best_record.title)
         return best_record
 

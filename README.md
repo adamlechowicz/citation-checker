@@ -37,6 +37,9 @@ citation-checker paper.pdf --mailto you@email.com
 # Save a JSON report and show fuzzy match scores
 citation-checker refs.bib --mailto you@email.com --output report.json --show-scores
 
+# Show what the database actually found (DB title + authors columns)
+citation-checker refs.bib --show-remote
+
 # Only show problems
 citation-checker refs.bib --filter-status MISMATCH NOT_FOUND ERROR
 
@@ -59,6 +62,7 @@ citation-checker refs.bib --filter-keys Vaswani17 LeCun89
 | `--concurrency N` | `10` | Max simultaneous entry checks |
 | `--no-check-urls` | off | Disable supplementary URL reachability checks |
 | `--show-scores` | off | Show title/author fuzzy scores in the table |
+| `--show-remote` | off | Show the title and authors returned by the matched database |
 | `--filter-keys KEY...` | — | Only check these cite keys |
 | `--filter-status S...` | — | Only display entries with these statuses |
 | `--quiet` | off | Print summary only; suppress table |
@@ -87,6 +91,17 @@ Field comparison uses [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz):
 - **Year**: exact integer match; a mismatch always forces `MISMATCH` regardless of other scores
 
 Author scores between 55 and 80 produce a warning but do not by themselves trigger `MISMATCH`.
+
+## PDF Input
+
+When given a `.pdf` file, citation-checker extracts the bibliography section using PyMuPDF and auto-detects the reference list format:
+
+- **Numbered** (`[1] Author, A. Title. Venue, year.`) — brackets or parenthesised numbers
+- **Author–year** (`Surname, A. (year). Title. Venue.`) — common in economics and some CS venues
+
+Cite keys are derived from the **first author's surname + year** (e.g., `Vaswani2017`, `LeCun1989`). When two entries share the same base key a letter suffix is appended to the second and later occurrences (`Chin2015`, `Chin2015a`).
+
+Extracted entries go through the same verification pipeline as `.bib` entries. No DOI or arXiv eprint is assumed unless one is found in the text.
 
 ## Grey Literature
 
@@ -128,7 +143,13 @@ Entries whose URL points to a supported news or media domain (Bloomberg, Financi
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v
+pytest tests/ -v             # fast unit suite
+pytest -m slow -v            # real-PDF corpus regression suite
 ```
 
-Tests use [respx](https://github.com/lundberg/respx) to mock all HTTP calls — no real API requests are made during testing.
+Unit tests use [respx](https://github.com/lundberg/respx) to mock all HTTP calls — no real API requests are made during testing.
+
+The `slow`-marked suite (`tests/test_pdf_parser_real.py`) runs the PDF parser
+against a corpus of ~30 real open-access papers in `tests/fixtures/pdfs/`
+spanning every supported citation style plus intentionally out-of-distribution
+samples (Bluebook legal, headings-absent layouts) that document known gaps.

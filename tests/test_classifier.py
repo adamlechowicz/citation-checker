@@ -1,7 +1,7 @@
 """Tests for the grey-literature heuristic classifier."""
 
 import pytest
-from citation_checker.classifier import is_grey_literature
+from citation_checker.classifier import is_grey_literature, likely_book_publisher
 from citation_checker.models import BibEntry
 
 
@@ -114,3 +114,48 @@ class TestScholarly:
             url="https://arxiv.org/abs/2206.13606",
         )
         assert not is_grey_literature(e)
+
+
+# ---------------------------------------------------------------------------
+# likely_book_publisher
+# ---------------------------------------------------------------------------
+
+class TestLikelyBookPublisher:
+    def test_publisher_field_match(self):
+        e = _entry(
+            entry_type="book",
+            title="Analytic Combinatorics",
+            raw_fields={"publisher": "Cambridge University Press"},
+        )
+        assert likely_book_publisher(e) == "Cambridge University Press"
+
+    def test_publisher_bled_into_title(self):
+        # PDF parser sometimes includes publisher text in the extracted title
+        e = _entry(
+            title="Analytic Combinatorics. Cambridge University Press, Cambridge, England",
+        )
+        assert likely_book_publisher(e) == "Cambridge University Press"
+
+    def test_springer_verlag(self):
+        e = _entry(raw_fields={"publisher": "Springer-Verlag"})
+        assert likely_book_publisher(e) == "Springer-Verlag"
+
+    def test_mit_press(self):
+        e = _entry(raw_fields={"publisher": "MIT Press"})
+        assert likely_book_publisher(e) == "MIT Press"
+
+    def test_no_publisher_signals(self):
+        e = _entry(
+            entry_type="article",
+            title="Learning-augmented algorithms for online scheduling",
+            raw_fields={},
+        )
+        assert likely_book_publisher(e) is None
+
+    def test_publisher_field_takes_priority_over_title(self):
+        # Both match; publisher field is checked first
+        e = _entry(
+            title="Some title with MIT Press in it",
+            raw_fields={"publisher": "Cambridge University Press"},
+        )
+        assert likely_book_publisher(e) == "Cambridge University Press"

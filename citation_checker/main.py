@@ -68,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show title/author fuzzy scores in the table",
     )
     p.add_argument(
+        "--show-remote", action="store_true",
+        help="Show the title and authors returned by the database for each matched entry",
+    )
+    p.add_argument(
         "--filter-keys", nargs="+", metavar="KEY",
         help="Only check these specific cite keys",
     )
@@ -161,7 +165,7 @@ def main() -> None:
 
     if not args.json_only:
         if not args.quiet:
-            print_table(results, entries_by_key, show_scores=args.show_scores, filter_status=filter_status)
+            print_table(results, entries_by_key, show_scores=args.show_scores, show_remote=args.show_remote, filter_status=filter_status)
         print_summary(results)
         console.print(f"[dim]Completed in {elapsed:.1f}s[/dim]")
 

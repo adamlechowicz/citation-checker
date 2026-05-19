@@ -11,6 +11,7 @@ from rich.table import Table
 from rich import box
 from rich.text import Text
 
+from .fuzzy import AUTHOR_SOFT_THRESHOLD, TITLE_THRESHOLD
 from .models import BibEntry, VerificationResult, VerificationStatus, VerificationStrategy
 from .utils import truncate
 
@@ -49,6 +50,7 @@ def print_table(
     results: list[VerificationResult],
     entries_by_key: dict[str, BibEntry],
     show_scores: bool = False,
+    show_remote: bool = False,
     filter_status: Optional[list[VerificationStatus]] = None,
 ) -> None:
     """Render a Rich table of verification results to stdout."""
@@ -69,6 +71,9 @@ def print_table(
         table.add_column("Title", justify="right", no_wrap=True)
         table.add_column("Author", justify="right", no_wrap=True)
         table.add_column("Year", justify="center", no_wrap=True)
+    if show_remote:
+        table.add_column("DB Title", max_width=50, overflow="ellipsis")
+        table.add_column("DB Authors", max_width=40, overflow="ellipsis")
     table.add_column("URL", justify="center", no_wrap=True)
     table.add_column("Notes")
 
@@ -96,6 +101,16 @@ def print_table(
             else:
                 row += ["—", "—", "—"]
 
+        if show_remote:
+            if r.remote_record:
+                db_title = r.remote_record.title or "—"
+                db_authors = ", ".join(r.remote_record.authors) if r.remote_record.authors else "—"
+            else:
+                db_title = "—"
+                db_authors = "—"
+            row.append(db_title)
+            row.append(db_authors)
+
         row.append(url_cell)
         row.append(notes)
         table.add_row(*row)
@@ -105,10 +120,7 @@ def print_table(
 
 def print_summary(results: list[VerificationResult]) -> None:
     """Print a one-line summary of counts."""
-    counts: dict[VerificationStatus, int] = {s: 0 for s in VerificationStatus}
-    for r in results:
-        counts[r.status] += 1
-
+    counts = _count_by_status(results)
     total = len(results)
     parts = []
     for status in _STATUS_ORDER:
@@ -129,9 +141,7 @@ def write_json_report(
     author_threshold: float,
 ) -> None:
     """Serialize results to a JSON file."""
-    counts: dict[str, int] = {s.value: 0 for s in VerificationStatus}
-    for r in results:
-        counts[r.status.value] += 1
+    counts = {status.value: count for status, count in _count_by_status(results).items()}
 
     report = {
         "meta": {
@@ -169,6 +179,13 @@ def _filter_and_sort(
     return sorted(results, key=lambda r: _STATUS_ORDER.index(r.status))
 
 
+def _count_by_status(results: list[VerificationResult]) -> dict[VerificationStatus, int]:
+    counts = {status: 0 for status in VerificationStatus}
+    for result in results:
+        counts[result.status] += 1
+    return counts
+
+
 def _url_cell(url_reachable: Optional[bool]) -> str:
     if url_reachable is True:
         return "[green]✓[/green]"
@@ -184,9 +201,9 @@ def _notes(r: VerificationResult) -> str:
     if r.warnings:
         parts.extend(r.warnings)
     if r.scores and r.status == VerificationStatus.MISMATCH:
-        if r.scores.title_score < 85.0:
+        if r.scores.title_score < TITLE_THRESHOLD:
             parts.append(f"title score {r.scores.title_score:.0f}")
-        if r.scores.author_score < 55.0:
+        if r.scores.author_score < AUTHOR_SOFT_THRESHOLD:
             parts.append(f"author score {r.scores.author_score:.0f}")
     return "; ".join(parts)
 

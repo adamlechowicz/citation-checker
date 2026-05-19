@@ -36,6 +36,11 @@ class BibEntry:
     eprint: Optional[str]
     archiveprefix: Optional[str]
     raw_fields: dict
+    # True when the original citation listed authors as "First Author et al."
+    # (or similar truncation). The parsed `authors` list contains only the
+    # names explicitly written before the "et al." marker, so a strict
+    # local-vs-remote count comparison would over-penalise these entries.
+    truncated_authors: bool = False
 
 
 @dataclass
@@ -45,6 +50,7 @@ class RemoteRecord:
     year: Optional[int]
     source: str
     raw_response: dict
+    container_title: Optional[str] = None
 
 
 @dataclass

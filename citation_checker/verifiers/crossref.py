@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from ..http_client import CitationHttpClient, CitationHttpError
 from ..models import RemoteRecord
+from ._matching import best_title_match
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +35,10 @@ async def search_by_title_author(
     rows: int = 5,
 ) -> Optional[RemoteRecord]:
     """Search CrossRef by bibliographic fields. Returns the best-matching record or None."""
-    from ..fuzzy import normalize_string, TITLE_THRESHOLD
-
     params: dict = {
         "query.bibliographic": title,
         "rows": rows,
-        "select": "DOI,title,author,published,published-print,published-online",
+        "select": "DOI,title,author,published,published-print,published-online,container-title",
     }
     if authors:
         params["query.author"] = authors[0]
@@ -55,23 +54,9 @@ async def search_by_title_author(
     if not items:
         return None
 
-    # Pick the result whose title best matches ours
-    best_record: Optional[RemoteRecord] = None
-    best_score: float = -1.0
-    norm_local = normalize_string(title)
-
-    for item in items:
-        record = _parse_message(item, source="crossref")
-        if record.title is None:
-            continue
-        score = __import__('rapidfuzz').fuzz.ratio(
-            norm_local, normalize_string(record.title)
-        )
-        if score > best_score:
-            best_score = score
-            best_record = record
-
-    if best_score >= TITLE_THRESHOLD and best_record is not None:
+    records = (_parse_message(item, source="crossref") for item in items)
+    best_record, best_score = best_title_match(title, records)
+    if best_record is not None:
         log.debug("CrossRef search matched (score=%.1f): %s", best_score, best_record.title)
         return best_record
 
@@ -109,15 +94,18 @@ def _parse_message(msg: dict, source: str) -> RemoteRecord:
             except (ValueError, TypeError):
                 continue
 
+    # Container title (journal name / proceedings name)
+    raw_ct = msg.get("container-title")
+    if isinstance(raw_ct, list):
+        container_title: Optional[str] = raw_ct[0] if raw_ct else None
+    else:
+        container_title = raw_ct or None
+
     return RemoteRecord(
         title=title,
         authors=authors,
         year=year,
         source=source,
         raw_response=msg,
+        container_title=container_title,
     )
-
-
-def _normalize_string(text: str) -> str:
-    from ..fuzzy import normalize_string
-    return normalize_string(text)

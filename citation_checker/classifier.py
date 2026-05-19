@@ -81,6 +81,33 @@ _GREY_LIT_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Well-known academic and trade book publishers.  Used to flag NOT_FOUND
+# entries that may be books rather than journal articles.
+_BOOK_PUBLISHERS_RE = re.compile(
+    r'\b(?:'
+    r'Cambridge University Press|Oxford University Press|'
+    r'MIT Press|Stanford University Press|Harvard University Press|'
+    r'Princeton University Press|University of Chicago Press|'
+    r'Columbia University Press|Yale University Press|'
+    r'Cornell University Press|Duke University Press|'
+    r'Johns Hopkins University Press|Penn State University Press|'
+    r'University of California Press|University of Michigan Press|'
+    r'Springer(?:-Verlag)?|Springer Nature|'
+    r'Birkhäuser|Birkhauser|'
+    r'Elsevier|Academic Press|North-Holland|'
+    r'Wiley(?:-Blackwell|-Interscience)?|John Wiley|'
+    r'Taylor\s*(?:&|and)\s*Francis|CRC Press|Chapman\s*(?:&|and)\s*Hall|'
+    r'Routledge|Palgrave(?:\s+Macmillan)?|Macmillan|'
+    r'McGraw[-\s]?Hill|Pearson|Addison[-\s]?Wesley|'
+    r'Morgan\s*(?:&|and)\s*Claypool|Morgan\s+Kaufmann|'
+    r'SIAM|American Mathematical Society|'
+    r'World Scientific|Kluwer|Plenum(?:\s+Press)?|'
+    r'Dover(?:\s+Publications)?|W\.?\s*H\.?\s*Freeman|'
+    r'O\'Reilly|No\s+Starch\s+Press|Manning(?:\s+Publications)?'
+    r')\b',
+    re.IGNORECASE,
+)
+
 # Patterns that suggest a single-entity (organization) author:
 # all-uppercase abbreviation (e.g. "NREL", "EPA"), or no period/comma in a
 # short name (typical of "Gurobi Optimization" style), or ends with
@@ -162,6 +189,26 @@ def is_grey_literature(entry: BibEntry) -> bool:
         return True
 
     return False
+
+
+def likely_book_publisher(entry: BibEntry) -> str | None:
+    """Return a matched publisher name if the entry looks like a book chapter or monograph.
+
+    Checks the explicit ``publisher`` raw field first, then falls back to
+    scanning the title (common when PDF parsing bleeds publisher text into
+    the extracted title).  Returns None when no known publisher is detected.
+    """
+    publisher_field = entry.raw_fields.get("publisher", "") or ""
+    m = _BOOK_PUBLISHERS_RE.search(publisher_field)
+    if m:
+        return m.group(0)
+
+    if entry.title:
+        m = _BOOK_PUBLISHERS_RE.search(entry.title)
+        if m:
+            return m.group(0)
+
+    return None
 
 
 # ---------------------------------------------------------------------------

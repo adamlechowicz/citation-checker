@@ -11,7 +11,7 @@ from ..models import RemoteRecord
 
 log = logging.getLogger(__name__)
 
-_BASE = "http://export.arxiv.org/api/query"
+_BASE = "https://export.arxiv.org/api/query"
 _NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
@@ -22,18 +22,19 @@ _NS = {
 async def lookup_by_eprint(
     eprint: str, client: CitationHttpClient
 ) -> Optional[RemoteRecord]:
-    """Look up an arXiv paper by eprint ID. Returns None if not found."""
-    try:
-        xml_text = await client.get_xml(_BASE, params={"id_list": eprint, "max_results": 1})
-    except CitationHttpError as exc:
-        log.debug("arXiv lookup failed for %s: %s", eprint, exc)
-        return None
+    """Look up an arXiv paper by eprint ID.
+
+    Returns None if the API confirms the ID does not exist.
+    Raises CitationHttpError on transport or server errors so callers can
+    surface them as ERROR results rather than silently falling through to
+    NOT_FOUND.
+    """
+    xml_text = await client.get_xml(_BASE, params={"id_list": eprint, "max_results": 1})
 
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
-        log.debug("arXiv XML parse error for %s: %s", eprint, exc)
-        return None
+        raise CitationHttpError(_BASE, None, f"arXiv returned non-XML response: {exc}") from exc
 
     # Check total results
     total_el = root.find("opensearch:totalResults", _NS)

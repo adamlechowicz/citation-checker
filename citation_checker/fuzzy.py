@@ -18,6 +18,15 @@ AUTHOR_THRESHOLD: float = 80.0
 # reported as warnings (e.g. initials vs. full names) but do not cause MISMATCH
 AUTHOR_SOFT_THRESHOLD: float = 55.0
 
+# Venue comparison thresholds (journal / booktitle vs. container-title)
+VENUE_MISMATCH_THRESHOLD: float = 45.0   # below → MISMATCH
+VENUE_SOFT_THRESHOLD: float = 72.0       # 45–72 → soft warning only
+
+# Per-author greedy match floor: assigned scores below this are treated as
+# no match (zeroed). Prevents a remote "Jie Xu" from giving "Jie Zhang" a
+# score of 40 just because it's the only author left to claim.
+AUTHOR_MIN_MATCH: float = 45.0
+
 _LATEX_ARTIFACT_RE = re.compile(r'\\[a-zA-Z]+|[{}~]|--+')
 _PUNCT_RE = re.compile(r"[^\w\s\-']")
 _WHITESPACE_RE = re.compile(r'\s+')
@@ -43,6 +52,8 @@ def compare_records(
 
     title_score = _score_title(local.title, remote.title)
 
+    venue_score: Optional[float] = None
+    effective_author_floor = AUTHOR_SOFT_THRESHOLD
     if skip_author_year:
         # Web records have no structured author/year metadata — score title only.
         author_score = 100.0
@@ -65,11 +76,44 @@ def compare_records(
                 f"; may be initials vs. full names or encoding variation"
             )
 
+        # When the remote record has many more authors than the local entry,
+        # a shared surname can inflate the score without a real first-name match.
+        # Require a solid match (≥ AUTHOR_THRESHOLD) in that case.
+        #
+        # Exception: when the local entry's author list was explicitly
+        # truncated with "et al.", the size disparity is intentional — the
+        # listed local authors are the FIRST N of the remote list, not a
+        # coincidence. Keep the lax floor so an initial-vs-full-name mismatch
+        # on the first author doesn't turn a real verify into a MISMATCH.
+        remote_count = len(remote.authors)
+        local_count = len(local.authors)
+        size_skew = remote_count > 3 and local_count > 0 and remote_count / local_count >= 3
+        if size_skew and not local.truncated_authors:
+            effective_author_floor = AUTHOR_THRESHOLD
+        else:
+            effective_author_floor = AUTHOR_SOFT_THRESHOLD
+
+        # Venue comparison (journal / booktitle vs. remote container-title)
+        local_venue = local.raw_fields.get("journal") or local.raw_fields.get("booktitle")
+        venue_score = _score_venue(local_venue, remote.container_title)
+        if venue_score is not None:
+            if venue_score < VENUE_MISMATCH_THRESHOLD:
+                soft_warnings.append(
+                    f"Venue mismatch: bib='{local_venue}', database='{remote.container_title}'"
+                    f" (score {venue_score:.0f}/100)"
+                )
+            elif venue_score < VENUE_SOFT_THRESHOLD:
+                soft_warnings.append(
+                    f"Venue difference: bib='{local_venue}', database='{remote.container_title}'"
+                    f" (score {venue_score:.0f}/100; may be abbreviation or alternate name)"
+                )
+
     # Hard failures → MISMATCH
     title_ok = title_score >= TITLE_THRESHOLD
-    author_hard_ok = author_score >= AUTHOR_SOFT_THRESHOLD  # hard floor is the soft threshold
+    author_hard_ok = author_score >= effective_author_floor
+    venue_ok = venue_score is None or venue_score >= VENUE_MISMATCH_THRESHOLD
 
-    if title_ok and author_hard_ok:
+    if title_ok and author_hard_ok and venue_ok:
         status = VerificationStatus.VERIFIED
     else:
         status = VerificationStatus.MISMATCH
@@ -124,25 +168,56 @@ def _score_title(local: Optional[str], remote: Optional[str]) -> float:
 def _score_authors(local: list[str], remote: list[str]) -> float:
     """Compute author set similarity (0–100).
 
-    For each local author, find the best match among remote authors.
-    Average those best-match scores.
+    Uses greedy one-to-one matching so that a single remote author cannot be
+    claimed by multiple local authors (e.g. 'Jie Xu' and 'Jie Zhang' both
+    matching the same remote 'Jie Xu' and inflating the score).
+
     Returns 100.0 if local list is empty (cannot penalise).
     """
     if not local:
         return 100.0
     if not remote:
-        # Local has authors but remote has none — suspicious, penalise lightly.
         return 50.0
 
+    norm_local = [normalize_string(a) for a in local]
     norm_remote = [normalize_string(a) for a in remote]
-    scores = []
-    for la in local:
-        norm_la = normalize_string(la)
-        best = max(
-            fuzz.token_sort_ratio(norm_la, nr) for nr in norm_remote
-        )
-        scores.append(best)
-    return sum(scores) / len(scores)
+
+    # Build full score matrix once
+    matrix = [
+        [fuzz.token_sort_ratio(nl, nr) for nr in norm_remote]
+        for nl in norm_local
+    ]
+
+    # Greedy assignment: each remote slot can be claimed at most once
+    used: set[int] = set()
+    total = 0.0
+    for i, row in enumerate(matrix):
+        best_score = 0.0
+        best_j = -1
+        for j, s in enumerate(row):
+            if j not in used and s > best_score:
+                best_score = s
+                best_j = j
+        if best_j >= 0:
+            used.add(best_j)
+        # Scores below the minimum floor count as no match (the forced
+        # assignment to a "least-bad" remote author is not meaningful).
+        if best_score >= AUTHOR_MIN_MATCH:
+            total += best_score
+
+    return total / len(norm_local)
+
+
+def _score_venue(local_venue: Optional[str], remote_venue: Optional[str]) -> Optional[float]:
+    """Compare journal/booktitle against remote container-title.
+
+    Returns a 0–100 score, or None if either side is absent (skip comparison).
+    Uses token_sort_ratio so abbreviations like 'IEEE Trans.' still match
+    'IEEE Transactions on Wireless Communications' well.
+    """
+    if not local_venue or not remote_venue:
+        return None
+    return fuzz.token_sort_ratio(normalize_string(local_venue), normalize_string(remote_venue))
 
 
 def _score_year(local: Optional[int], remote: Optional[int]) -> Optional[bool]:

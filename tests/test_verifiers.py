@@ -116,7 +116,7 @@ async def test_crossref_search(client):
 @pytest.mark.asyncio
 async def test_arxiv_lookup_found(client):
     with respx.mock:
-        respx.get("http://export.arxiv.org/api/query").mock(
+        respx.get("https://export.arxiv.org/api/query").mock(
             return_value=httpx.Response(200, text=ARXIV_ATOM_RESPONSE)
         )
         async with client:
@@ -138,7 +138,7 @@ async def test_arxiv_lookup_not_found(client):
 </feed>
 """
     with respx.mock:
-        respx.get("http://export.arxiv.org/api/query").mock(
+        respx.get("https://export.arxiv.org/api/query").mock(
             return_value=httpx.Response(200, text=empty_atom)
         )
         async with client:
