@@ -1,6 +1,6 @@
 # citation-checker
 
-A deterministic bibliography verifier for `.bib` files and PDFs. Checks whether cited works exist in authoritative academic databases and whether core metadata (title, authors, year) actually matches what you cited — no LLMs involved.
+A deterministic bibliography verifier for `.bib` files and PDFs. Checks whether cited works exist in authoritative academic databases and whether core metadata (title, authors, year, venue) actually matches the given citation.
 
 ## How It Works
 
@@ -20,7 +20,7 @@ All entries are checked concurrently with per-host rate limiting to stay within 
 Requires Python ≥ 3.11.
 
 ```bash
-pip install -e .
+pip install citation-checker
 ```
 
 Dependencies: `bibtexparser`, `pymupdf`, `httpx`, `rapidfuzz`, `rich`
@@ -94,18 +94,18 @@ Author scores between 55 and 80 produce a warning but do not by themselves trigg
 
 ## PDF Input
 
-When given a `.pdf` file, citation-checker extracts the bibliography section using PyMuPDF and auto-detects the reference list format:
+When given a `.pdf` file, citation-checker extracts the bibliography section using PyMuPDF and auto-detects the reference list format -- for instance:
 
 - **Numbered** (`[1] Author, A. Title. Venue, year.`) — brackets or parenthesised numbers
 - **Author–year** (`Surname, A. (year). Title. Venue.`) — common in economics and some CS venues
 
-Cite keys are derived from the **first author's surname + year** (e.g., `Vaswani2017`, `LeCun1989`). When two entries share the same base key a letter suffix is appended to the second and later occurrences (`Chin2015`, `Chin2015a`).
+Cite keys are derived from the **first author + year** (e.g., `Wallace1996`, `Fisher2009`). When two entries share the same base key a letter suffix is appended to the second and later occurrences (`Vaswani2017`, `Vaswani2017a`).
 
 Extracted entries go through the same verification pipeline as `.bib` entries. No DOI or arXiv eprint is assumed unless one is found in the text.
 
 ## Grey Literature
 
-Entries on code/data hosting sites (GitHub, Zenodo, Hugging Face), government and national lab sites (`nrel.gov`, `epa.gov`, `eia.gov`, etc.), or corporate technical resources are automatically classified as `GREY_LITERATURE` and skipped in academic database searches — they are not expected to appear in CrossRef or Semantic Scholar.
+Entries on code/data hosting sites (GitHub, Zenodo, Hugging Face), government and national lab sites (`nlr.gov`, `epa.gov`, `eia.gov`, etc.), or corporate technical resources are classified as `GREY_LITERATURE` and skipped in academic database searches — they are not expected to appear in CrossRef or Semantic Scholar.
 
 Entries whose URL points to a supported news or media domain (Bloomberg, Financial Times, NYT, Reuters, WSJ, The Guardian, BBC, Wired, MIT Technology Review, and more) are verified by fetching the page and comparing the article title. A match counts as `VERIFIED`.
 
@@ -138,18 +138,3 @@ Entries whose URL points to a supported news or media domain (Bloomberg, Financi
   ]
 }
 ```
-
-## Running Tests
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v             # fast unit suite
-pytest -m slow -v            # real-PDF corpus regression suite
-```
-
-Unit tests use [respx](https://github.com/lundberg/respx) to mock all HTTP calls — no real API requests are made during testing.
-
-The `slow`-marked suite (`tests/test_pdf_parser_real.py`) runs the PDF parser
-against a corpus of ~30 real open-access papers in `tests/fixtures/pdfs/`
-spanning every supported citation style plus intentionally out-of-distribution
-samples (Bluebook legal, headings-absent layouts) that document known gaps.
