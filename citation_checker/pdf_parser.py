@@ -222,8 +222,8 @@ _ARXIV_RE = re.compile(
 # Generic URL (matched after DOI/arXiv to avoid duplicates)
 _URL_RE = re.compile(r'https?://[^\s,;\]]+', re.IGNORECASE)
 
-# 4-digit year in the range 1000-2099
-_YEAR_RE = re.compile(r'\b(1[0-9]{3}|20[0-9]{2})\b')
+# 4-digit year in the range 1000-2199
+_YEAR_RE = re.compile(r'\b(1[0-9]{3}|2[01][0-9]{2})\b')
 
 # ACM-style block anchor: "Authors. YEAR. Title. Venue."
 _ACM_YEAR_SPLIT_RE = re.compile(

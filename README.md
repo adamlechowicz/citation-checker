@@ -61,6 +61,7 @@ citation-checker refs.bib --filter-keys Vaswani17 LeCun89
 | `--retries N` | `3` | Max retries per request |
 | `--concurrency N` | `10` | Max simultaneous entry checks |
 | `--no-check-urls` | off | Disable supplementary URL reachability checks |
+| `--allow-local-urls` | off | Allow URL checks to hit private / loopback / link-local IPs (off by default to avoid SSRF on hostile `.bib` files) |
 | `--show-scores` | off | Show title/author fuzzy scores in the table |
 | `--show-remote` | off | Show the title and authors returned by the matched database |
 | `--filter-keys KEY...` | — | Only check these cite keys |

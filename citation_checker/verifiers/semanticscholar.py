@@ -17,6 +17,7 @@ from typing import Optional
 
 from ..http_client import CitationHttpClient, CitationHttpError
 from ..models import RemoteRecord
+from ._matching import best_title_match
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +32,10 @@ async def search_by_title_author(
 ) -> Optional[RemoteRecord]:
     """Search Semantic Scholar by title (+ first author for disambiguation).
 
-    Returns the top result as a RemoteRecord, or None if nothing was found.
+    Returns the best result whose title clears the global title floor, or
+    None if no candidate is close enough. Matches the contract used by the
+    CrossRef and OpenAlex verifiers — never surface a hit that the fuzzy
+    scorer wouldn't accept on its own.
     """
     # Build query: title + first author's last name to reduce false positives.
     query = title
@@ -42,7 +46,7 @@ async def search_by_title_author(
     try:
         data = await client.get_json(
             _BASE_URL,
-            params={"query": query, "fields": _FIELDS, "limit": 1},
+            params={"query": query, "fields": _FIELDS, "limit": 5},
         )
     except CitationHttpError as exc:
         log.debug("Semantic Scholar search error: %s", exc)
@@ -52,11 +56,21 @@ async def search_by_title_author(
     if not papers:
         return None
 
-    p = papers[0]
+    records = (_parse_paper(p) for p in papers)
+    best_record, best_score = best_title_match(title, records)
+    if best_record is not None:
+        log.debug("Semantic Scholar matched (score=%.1f): %s", best_score, best_record.title)
+        return best_record
+
+    log.debug("Semantic Scholar: no match above threshold (best=%.1f) for: %s", best_score, title)
+    return None
+
+
+def _parse_paper(paper: dict) -> RemoteRecord:
     return RemoteRecord(
-        title=p.get("title"),
-        authors=[a["name"] for a in p.get("authors", [])],
-        year=p.get("year"),
+        title=paper.get("title"),
+        authors=[a["name"] for a in paper.get("authors", []) if a.get("name")],
+        year=paper.get("year"),
         source="semanticscholar",
-        raw_response=p,
+        raw_response=paper,
     )

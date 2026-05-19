@@ -226,6 +226,14 @@ def _matched_result(
     )
     warnings.extend(fuzzy_warnings)
 
+    # Web-source verifications rely on title alone — no author/year cross
+    # check is possible because pages don't expose structured metadata.
+    # Flag this clearly so readers can judge the strength of the match.
+    if remote.source == "web" and status == VerificationStatus.VERIFIED:
+        warnings.append(
+            "verified via web title only — no author/year cross-check"
+        )
+
     return VerificationResult(
         entry_key=entry.key,
         status=status,

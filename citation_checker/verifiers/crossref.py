@@ -41,7 +41,10 @@ async def search_by_title_author(
         "select": "DOI,title,author,published,published-print,published-online,container-title",
     }
     if authors:
-        params["query.author"] = authors[0]
+        # CrossRef tokenises query.author, so passing the first few authors
+        # raises the bibliographic match score for the right paper without
+        # rejecting hits where only the first author matches.
+        params["query.author"] = " ".join(authors[:3])
 
     url = f"{_BASE}/works"
     try:

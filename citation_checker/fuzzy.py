@@ -32,6 +32,12 @@ _PUNCT_RE = re.compile(r"[^\w\s\-']")
 _WHITESPACE_RE = re.compile(r'\s+')
 
 
+# Title score above which we trust a title-only match even with no author
+# data — used for entries whose local author list failed to parse and for
+# web-source verifications.
+TITLE_ONLY_STRONG_THRESHOLD: float = 95.0
+
+
 def compare_records(
     local: BibEntry, remote: RemoteRecord, *, skip_author_year: bool = False
 ) -> tuple[FieldScores, VerificationStatus, list[str]]:
@@ -40,13 +46,13 @@ def compare_records(
     Returns (FieldScores, VerificationStatus, soft_warnings).
 
     Soft warnings are issues that do not change the status to MISMATCH:
-      - Year mismatch (common for conference paper vs. journal version)
       - Author score between AUTHOR_SOFT_THRESHOLD and AUTHOR_THRESHOLD
         (common for initials vs. full names, hyphen encoding, etc.)
 
     Hard failures that produce MISMATCH:
       - Title score below TITLE_THRESHOLD
       - Author score below AUTHOR_SOFT_THRESHOLD (genuinely different people)
+      - Year mismatch (when both sides have a year)
     """
     soft_warnings: list[str] = []
 
@@ -54,23 +60,18 @@ def compare_records(
 
     venue_score: Optional[float] = None
     effective_author_floor = AUTHOR_SOFT_THRESHOLD
+    author_score: Optional[float]
+    year_match: Optional[bool]
     if skip_author_year:
         # Web records have no structured author/year metadata — score title only.
-        author_score = 100.0
+        author_score = None
         year_match = None
     else:
         author_score = _score_authors(local.authors, remote.authors)
         year_match = _score_year(local.year, remote.year)
 
-        # Soft warning: year mismatch (conference vs. journal version)
-        if year_match is False:
-            soft_warnings.append(
-                f"Year mismatch: bib={local.year}, database={remote.year}"
-                f" (may be conference vs. journal/final version)"
-            )
-
         # Soft warning: author formatting difference (initials vs. full names, etc.)
-        if AUTHOR_SOFT_THRESHOLD <= author_score < AUTHOR_THRESHOLD:
+        if author_score is not None and AUTHOR_SOFT_THRESHOLD <= author_score < AUTHOR_THRESHOLD:
             soft_warnings.append(
                 f"Author name formatting difference (score {author_score:.0f}/100)"
                 f"; may be initials vs. full names or encoding variation"
@@ -110,10 +111,25 @@ def compare_records(
 
     # Hard failures → MISMATCH
     title_ok = title_score >= TITLE_THRESHOLD
-    author_hard_ok = author_score >= effective_author_floor
+    if author_score is None:
+        # Local authors not parsed (or skipped for web sources). Require a
+        # very-strong title match to trust the verification.
+        author_hard_ok = title_score >= TITLE_ONLY_STRONG_THRESHOLD
+        if not skip_author_year:
+            soft_warnings.append(
+                "Local authors not parsed; verification relies on title alone"
+            )
+    else:
+        author_hard_ok = author_score >= effective_author_floor
+    year_ok = year_match is not False  # None (missing) is OK; False forces MISMATCH
     venue_ok = venue_score is None or venue_score >= VENUE_MISMATCH_THRESHOLD
 
-    if title_ok and author_hard_ok and venue_ok:
+    if not year_ok:
+        soft_warnings.append(
+            f"Year mismatch: bib={local.year}, database={remote.year}"
+        )
+
+    if title_ok and author_hard_ok and year_ok and venue_ok:
         status = VerificationStatus.VERIFIED
     else:
         status = VerificationStatus.MISMATCH
@@ -123,6 +139,18 @@ def compare_records(
         author_score=author_score,
         year_match=year_match,
     ), status, soft_warnings
+
+
+# Metadata suffix shape — what should follow a real title that has been
+# concatenated with venue/year/publisher text by a PDF extractor. Only
+# accept the prefix-rescue when the surplus looks like one of these.
+_TITLE_METADATA_SUFFIX_RE = re.compile(
+    r'^[\s.,:;\-—]*'
+    r'(?:in\b|proc\.?|proceedings\b|journal\b|vol\.?|arxiv\b|doi\b|'
+    r'\d{4}\b|springer\b|elsevier\b|ieee\b|acm\b|pmlr\b|nature\b|'
+    r'advances\s+in\b)',
+    re.IGNORECASE,
+)
 
 
 def _score_title(local: Optional[str], remote: Optional[str]) -> float:
@@ -154,28 +182,33 @@ def _score_title(local: Optional[str], remote: Optional[str]) -> float:
         return 100.0
 
     # PDF-parsed titles often include trailing venue info (e.g. ". Nature Energy 2025").
-    # If the local title starts with the full remote title, count as a match.
-    # Require remote to be substantial (>20 chars) to avoid spurious short matches.
+    # Accept the prefix rescue ONLY when the surplus suffix looks like
+    # citation metadata — otherwise a long fabricated title that simply
+    # appends extra words to a real title would silently verify.
     if len(norm_remote) > 20 and norm_local.startswith(norm_remote):
-        return 100.0
-    # Reverse: if remote starts with local (remote has a subtitle we don't)
+        surplus = norm_local[len(norm_remote):]
+        if _TITLE_METADATA_SUFFIX_RE.match(surplus):
+            return 100.0
     if len(norm_local) > 20 and norm_remote.startswith(norm_local):
-        return 100.0
+        surplus = norm_remote[len(norm_local):]
+        if _TITLE_METADATA_SUFFIX_RE.match(surplus):
+            return 100.0
 
     return score
 
 
-def _score_authors(local: list[str], remote: list[str]) -> float:
+def _score_authors(local: list[str], remote: list[str]) -> Optional[float]:
     """Compute author set similarity (0–100).
 
     Uses greedy one-to-one matching so that a single remote author cannot be
     claimed by multiple local authors (e.g. 'Jie Xu' and 'Jie Zhang' both
     matching the same remote 'Jie Xu' and inflating the score).
 
-    Returns 100.0 if local list is empty (cannot penalise).
+    Returns None when the local list is empty — caller must handle the
+    "uncomparable" case explicitly rather than silently passing.
     """
     if not local:
-        return 100.0
+        return None
     if not remote:
         return 50.0
 

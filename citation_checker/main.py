@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable URL checks",
     )
     p.add_argument(
+        "--allow-local-urls", action="store_true",
+        help="Allow URL checks to hit private / loopback / link-local IPs "
+             "(off by default to avoid SSRF on hostile .bib files)",
+    )
+    p.add_argument(
         "--show-scores", action="store_true",
         help="Show title/author fuzzy scores in the table",
     )
@@ -141,7 +146,7 @@ def main() -> None:
         entries = [e for e in entries if e.key in key_set]
         if not entries:
             console.print(f"[yellow]No entries matched --filter-keys {args.filter_keys}[/yellow]")
-            sys.exit(0)
+            sys.exit(2)
 
     entries_by_key = {e.key: e for e in entries}
 
@@ -210,7 +215,8 @@ async def _run_with_progress(args, entries, bib_path) -> list:
         async with CitationHttpClient(
             timeout=args.timeout,
             max_retries=args.retries,
-            mailto=args.mailto or "citation-checker@example.com",
+            mailto=args.mailto,
+            allow_local_urls=args.allow_local_urls,
         ) as client:
             return await run_checks(
                 entries=entries,

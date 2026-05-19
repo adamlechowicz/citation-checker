@@ -56,7 +56,9 @@ class RemoteRecord:
 @dataclass
 class FieldScores:
     title_score: float
-    author_score: float
+    # None when the local entry has no parsed authors — comparison is
+    # not meaningful, and the verifier flags the entry with a warning.
+    author_score: Optional[float]
     year_match: Optional[bool]
 
 

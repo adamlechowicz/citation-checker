@@ -94,7 +94,9 @@ class TestScoreAuthors:
         assert _score_authors(["Alice Smith"], ["Alice Smith"]) == 100.0
 
     def test_empty_local(self):
-        assert _score_authors([], ["Alice Smith"]) == 100.0
+        # Empty local author list returns None (uncomparable) — callers must
+        # decide how to handle the missing data rather than silently passing.
+        assert _score_authors([], ["Alice Smith"]) is None
 
     def test_empty_remote(self):
         score = _score_authors(["Alice Smith"], [])
@@ -136,12 +138,15 @@ class TestCompareRecords:
         assert scores.title_score == 100.0
         assert warnings == []
 
-    def test_year_mismatch_is_soft_warning(self):
-        # Year mismatch alone should NOT produce MISMATCH — only a soft warning
+    def test_year_mismatch_forces_mismatch(self):
+        # Year mismatch always forces MISMATCH — the README documents this
+        # as the authoritative behaviour, and a fabricated year on an
+        # otherwise-real paper is exactly the LLM-hallucination pattern we
+        # want to catch.
         entry = _make_entry(year=2020)
         remote = _make_remote(year=2021)
         _, status, warnings = compare_records(entry, remote)
-        assert status == VerificationStatus.VERIFIED
+        assert status == VerificationStatus.MISMATCH
         assert any("Year mismatch" in w for w in warnings)
 
     def test_mismatch_title(self):
@@ -188,3 +193,51 @@ class TestCompareRecords:
         scores, status, _ = compare_records(entry, remote)
         assert status == VerificationStatus.VERIFIED
         assert scores.title_score == 100.0
+
+
+class TestPrefixRescueMetadataGate:
+    """A3: prefix rescue only fires when surplus looks like venue metadata."""
+
+    def test_venue_suffix_rescues(self):
+        score = _score_title(
+            "Carbon-aware load shifting for data centers. Nature Energy 2025",
+            "Carbon-aware load shifting for data centers",
+        )
+        assert score == 100.0
+
+    def test_proceedings_suffix_rescues(self):
+        score = _score_title(
+            "Carbon-aware load shifting for data centers. Proceedings of FOO 2024",
+            "Carbon-aware load shifting for data centers",
+        )
+        assert score == 100.0
+
+    def test_non_metadata_suffix_does_not_rescue(self):
+        # Adversarial: appending plausible English words to a real title.
+        score = _score_title(
+            "Carbon-aware load shifting for data centers applications and best practices",
+            "Carbon-aware load shifting for data centers",
+        )
+        assert score < TITLE_THRESHOLD
+
+
+class TestEmptyLocalAuthors:
+    """A2: empty local author list flows through as None, not 100."""
+
+    def test_strong_title_with_empty_authors_verifies_with_warning(self):
+        entry = _make_entry(authors=[])
+        remote = _make_remote()  # same title 100%
+        scores, status, warnings = compare_records(entry, remote)
+        assert scores.author_score is None
+        assert status == VerificationStatus.VERIFIED
+        assert any("authors not parsed" in w.lower() for w in warnings)
+
+    def test_weak_title_with_empty_authors_is_mismatch(self):
+        # Title score of ~89 — passes TITLE_THRESHOLD (85) but below the
+        # title-only strong threshold (95).
+        entry = _make_entry(authors=[], title="Gradient learning applied to document recognition")
+        remote = _make_remote(title="Gradient-Based Learning Applied to Document Recognition")
+        scores, status, _ = compare_records(entry, remote)
+        assert scores.author_score is None
+        # 89 < 95 strong threshold → MISMATCH
+        assert status == VerificationStatus.MISMATCH

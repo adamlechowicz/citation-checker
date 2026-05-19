@@ -95,7 +95,10 @@ def print_table(
         if show_scores:
             if r.scores:
                 row.append(f"{r.scores.title_score:.0f}")
-                row.append(f"{r.scores.author_score:.0f}")
+                if r.scores.author_score is None:
+                    row.append("—")
+                else:
+                    row.append(f"{r.scores.author_score:.0f}")
                 year_sym = {True: "✓", False: "✗", None: "—"}.get(r.scores.year_match, "—")
                 row.append(year_sym)
             else:
@@ -203,7 +206,7 @@ def _notes(r: VerificationResult) -> str:
     if r.scores and r.status == VerificationStatus.MISMATCH:
         if r.scores.title_score < TITLE_THRESHOLD:
             parts.append(f"title score {r.scores.title_score:.0f}")
-        if r.scores.author_score < AUTHOR_SOFT_THRESHOLD:
+        if r.scores.author_score is not None and r.scores.author_score < AUTHOR_SOFT_THRESHOLD:
             parts.append(f"author score {r.scores.author_score:.0f}")
     return "; ".join(parts)
 
@@ -232,9 +235,13 @@ def _result_to_dict(r: VerificationResult, entry: Optional[BibEntry]) -> dict:
 
     scores = None
     if r.scores:
+        author_score = (
+            None if r.scores.author_score is None
+            else round(r.scores.author_score, 2)
+        )
         scores = {
             "title_score": round(r.scores.title_score, 2),
-            "author_score": round(r.scores.author_score, 2),
+            "author_score": author_score,
             "year_match": r.scores.year_match,
         }
 

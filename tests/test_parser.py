@@ -54,25 +54,85 @@ def test_fake_entry_fields():
 
 class TestParseAuthors:
     def test_last_first_format(self):
-        result = _parse_authors("LeCun, Yann and Bengio, Yoshua")
+        result, truncated = _parse_authors("LeCun, Yann and Bengio, Yoshua")
         assert len(result) == 2
         assert any("Yann" in a for a in result)
+        assert truncated is False
 
     def test_first_last_format(self):
-        result = _parse_authors("Yann LeCun and Yoshua Bengio")
+        result, truncated = _parse_authors("Yann LeCun and Yoshua Bengio")
         assert len(result) == 2
+        assert truncated is False
 
     def test_single_author(self):
-        result = _parse_authors("Turing, Alan")
+        result, truncated = _parse_authors("Turing, Alan")
         assert len(result) == 1
+        assert truncated is False
 
     def test_empty(self):
-        assert _parse_authors("") == []
+        assert _parse_authors("") == ([], False)
 
     def test_strips_latex(self):
-        result = _parse_authors(r"Sch\"{o}lkopf, Bernhard")
+        result, truncated = _parse_authors(r"Sch\"{o}lkopf, Bernhard")
         assert len(result) == 1
         assert result[0]  # non-empty
+        assert truncated is False
+
+
+class TestParseAuthorsCommaOnly:
+    """A1: split comma-separated author lists that lack 'and' separators."""
+
+    def test_two_full_name_authors_split(self):
+        result, _ = _parse_authors("Alice Smith, Bob Jones")
+        assert result == ["Alice Smith", "Bob Jones"]
+
+    def test_commas_no_and_splits_three_authors(self):
+        result, _ = _parse_authors("Alice Smith, Bob Jones, Carol White")
+        assert result == ["Alice Smith", "Bob Jones", "Carol White"]
+
+    def test_initial_form_authors_split(self):
+        result, _ = _parse_authors("A. Smith, B. Jones, C. White")
+        assert len(result) == 3
+        assert "A. Smith" in result
+
+    def test_single_last_first_stays_one_author(self):
+        # "Smith, John" must NOT trigger comma-splitting.
+        result, _ = _parse_authors("Smith, John")
+        assert result == ["John Smith"]
+
+    def test_multi_last_first_falls_back(self):
+        # "Smith, John, Jones, Kate" is malformed (BibTeX would use 'and');
+        # the safe behaviour is to keep it as one chunk rather than misparse.
+        result, _ = _parse_authors("Smith, John, Jones, Kate")
+        # Single-token chunks (no internal space) → fallback.
+        assert len(result) == 1
+
+    def test_comma_only_with_and_takes_and_path(self):
+        # If 'and' is present, the comma-fallback must not fire.
+        result, _ = _parse_authors("Smith, John and Jones, Kate")
+        assert len(result) == 2
+
+    def test_org_acronyms_stay_one(self):
+        # Single-token chunks ("NREL", "EPA") — fallback rejects split.
+        result, _ = _parse_authors("NREL, EPA, NASA")
+        assert len(result) == 1
+
+
+class TestParseAuthorsTruncation:
+    """A5: detect 'and others' / 'et al.' truncation markers."""
+
+    def test_and_others_marker(self):
+        result, truncated = _parse_authors("Alice Smith and Bob Jones and others")
+        assert truncated is True
+        assert "others" not in " ".join(result).lower()
+
+    def test_et_al_marker(self):
+        result, truncated = _parse_authors("Alice Smith and Bob Jones et al.")
+        assert truncated is True
+
+    def test_no_marker(self):
+        _, truncated = _parse_authors("Alice Smith and Bob Jones")
+        assert truncated is False
 
 
 class TestParseYear:
@@ -87,6 +147,19 @@ class TestParseYear:
 
     def test_invalid(self):
         assert _parse_year("forthcoming") is None
+
+    # C4: extended year range
+    def test_year_2100_in_range(self):
+        assert _parse_year("2100") == 2100
+
+    def test_year_2150_in_range(self):
+        assert _parse_year("2150") == 2150
+
+    def test_year_2200_out_of_range(self):
+        assert _parse_year("2200") is None
+
+    def test_year_1499_out_of_range(self):
+        assert _parse_year("1499") is None
 
 
 class TestStripLatex:

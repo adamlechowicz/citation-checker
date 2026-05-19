@@ -83,7 +83,9 @@ _BOT_CHALLENGE_RE = re.compile(
     r'robot check|verify you are human|please verify|'
     r'attention required|security check|'
     r'please enable javascript|403 forbidden|'
-    r'service unavailable',
+    r'service unavailable|'
+    r'checking your browser|cf-chl-bypass|enable cookies|'
+    r'cloudflare|unusual traffic',
     re.IGNORECASE,
 )
 
@@ -106,19 +108,25 @@ def _is_usable_title(title: str) -> bool:
 async def lookup_by_url(url: str, client: CitationHttpClient) -> Optional[RemoteRecord]:
     """Fetch a URL and extract the page title as a RemoteRecord.
 
-    Returns None if the page is unreachable or no title can be extracted.
-    The returned record has an empty author list and no year — the caller
-    should skip author/year scoring and compare titles only.
+    Returns None if the page is unreachable, returns a non-2xx status, or
+    no usable title can be extracted. The returned record has an empty
+    author list and no year — the caller should skip author/year scoring
+    and compare titles only.
     """
     try:
-        html = await client.get_html(url)
+        response = await client.get_html(url)
     except CitationHttpError as exc:
         log.debug("Web fetch failed for %s: %s", url, exc)
         return None
 
+    if response.status_code >= 400:
+        log.debug("Web fetch returned %d for %s; refusing to scrape body",
+                  response.status_code, url)
+        return None
+
     extractor = _MetaExtractor()
     try:
-        extractor.feed(html)
+        extractor.feed(response.text)
     except Exception as exc:
         log.debug("HTML parse error for %s: %s", url, exc)
         return None

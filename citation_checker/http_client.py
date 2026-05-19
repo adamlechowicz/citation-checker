@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
 log = logging.getLogger(__name__)
-
-_DEFAULT_MAILTO = "citation-checker@example.com"
 
 # Per-host rate-limit configuration
 _HOST_CONFIG: dict[str, dict] = {
@@ -48,12 +48,20 @@ class CitationHttpClient:
         self,
         timeout: float = 10.0,
         max_retries: int = 3,
-        mailto: str = _DEFAULT_MAILTO,
+        mailto: Optional[str] = None,
+        allow_local_urls: bool = False,
     ) -> None:
         self._timeout = timeout
         self._max_retries = max_retries
         self._mailto = mailto
-        self._user_agent = f"CitationChecker/1.0 (mailto:{mailto})"
+        # Drop the (mailto:...) portion entirely when no real address was
+        # supplied — sending a placeholder demotes CrossRef polite-pool to
+        # impolite under a fake identity, which is worse than going anonymous.
+        if mailto:
+            self._user_agent = f"CitationChecker/1.0 (mailto:{mailto})"
+        else:
+            self._user_agent = "CitationChecker/1.0"
+        self._allow_local_urls = allow_local_urls
         self._host_states: dict[str, _HostState] = {}
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -87,19 +95,48 @@ class CitationHttpClient:
         response = await self._request(url, params=params, accept="application/atom+xml")
         return response.text
 
-    async def get_html(self, url: str) -> str:
-        """GET a URL and return the response body as HTML text."""
-        response = await self._request(url, params=None, accept="text/html,application/xhtml+xml")
-        return response.text
+    async def get_html(self, url: str) -> httpx.Response:
+        """GET a URL and return the full HTML response (status + body).
+
+        Returning the response (not just the text) lets callers reject
+        non-2xx pages — a 403 bot-challenge body would otherwise be parsed
+        as a real article title.
+        """
+        return await self._request(url, params=None, accept="text/html,application/xhtml+xml")
 
     async def head_url(self, url: str) -> Optional[int]:
-        """Issue a HEAD (or GET fallback) request. Returns status code or None on error."""
+        """Issue a HEAD (or GET fallback) request. Returns status code or None on error.
+
+        Walks redirect chains manually, gating every hop through the SSRF
+        safe-URL check. Capped at 3 redirects.
+        """
         assert self._client is not None, "Must be used as async context manager"
+        if not _is_safe_url(url, allow_local=self._allow_local_urls):
+            log.debug("URL check refused unsafe URL: %s", url)
+            return None
+        current = url
         try:
-            resp = await self._client.head(url, timeout=self._timeout)
-            if resp.status_code == 405:
-                resp = await self._client.get(url, timeout=self._timeout)
-            return resp.status_code
+            for _ in range(4):  # initial + up to 3 redirects
+                resp = await self._client.head(
+                    current, timeout=self._timeout, follow_redirects=False,
+                )
+                if resp.status_code == 405:
+                    resp = await self._client.get(
+                        current, timeout=self._timeout, follow_redirects=False,
+                    )
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("location")
+                    if not location:
+                        return resp.status_code
+                    next_url = str(httpx.URL(current).join(location))
+                    if not _is_safe_url(next_url, allow_local=self._allow_local_urls):
+                        log.debug("URL check refused unsafe redirect target: %s", next_url)
+                        return None
+                    current = next_url
+                    continue
+                return resp.status_code
+            log.debug("URL check exceeded redirect cap for %s", url)
+            return None
         except Exception as exc:
             log.debug("URL check failed for %s: %s", url, exc)
             return None
@@ -112,6 +149,8 @@ class CitationHttpClient:
         self, url: str, params: Optional[dict], accept: str
     ) -> httpx.Response:
         assert self._client is not None, "Must be used as async context manager"
+        if not _is_safe_url(url, allow_local=self._allow_local_urls):
+            raise CitationHttpError(url, None, "blocked: unsafe URL")
         host = _extract_host(url)
         state = self._get_host_state(host)
 
@@ -184,5 +223,45 @@ class CitationHttpClient:
 
 
 def _extract_host(url: str) -> str:
-    from urllib.parse import urlparse
     return urlparse(url).netloc
+
+
+def _is_safe_url(url: str, *, allow_local: bool) -> bool:
+    """Return False for URLs that should never be fetched.
+
+    Blocks:
+      - Schemes other than http/https.
+      - Hosts that parse as an IP literal in private, loopback,
+        link-local, reserved, or multicast ranges (unless ``allow_local``
+        is True).
+      - Empty hosts.
+
+    Hostnames are NOT resolved via DNS — that would race with the actual
+    request (DNS rebinding) and add latency. The parse-only check still
+    blocks the obvious cases: ``http://127.0.0.1/``,
+    ``http://169.254.169.254/`` (AWS metadata), ``http://[::1]/``.
+    """
+    try:
+        parsed = urlparse(url)
+    except (ValueError, TypeError):
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    if allow_local:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Hostname (not an IP literal) — allow.
+        return True
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )

@@ -20,6 +20,17 @@ _LATEX_CMD_RE = re.compile(r'\\[a-zA-Z]+\{([^}]*)\}|\\[a-zA-Z]+\s*')
 _BRACE_RE = re.compile(r'[{}]')
 _WHITESPACE_RE = re.compile(r'\s+')
 
+# Trailing truncation markers in a bib author field.
+_BIB_AUTHOR_TRUNC_RE = re.compile(
+    r'\s+(?:and\s+others|et\s+al\.?)\s*$',
+    re.IGNORECASE,
+)
+
+# Comma-separated author chunk shape: starts with a Title-cased token
+# (capital + word chars) OR an initial (capital + period). Used to decide
+# whether a comma-only list is a safe-to-split author list.
+_AUTHOR_CHUNK_SHAPE_RE = re.compile(r"^[A-Z](?:[\w'À-ſ\-]+|\.)")
+
 
 def parse_bib_file(path: str) -> list[BibEntry]:
     """Parse a .bib file and return a list of BibEntry objects.
@@ -60,7 +71,7 @@ def _normalize_entry(raw: dict) -> BibEntry:
     if title:
         title = _strip_latex(title).strip() or None
 
-    authors = _parse_authors(raw.get("author", ""))
+    authors, truncated_authors = _parse_authors(raw.get("author", ""))
     year = _parse_year(raw.get("year"))
 
     doi_raw = raw.get("doi") or raw.get("DOI")
@@ -87,14 +98,42 @@ def _normalize_entry(raw: dict) -> BibEntry:
         eprint=eprint,
         archiveprefix=archiveprefix,
         raw_fields=raw_fields,
+        truncated_authors=truncated_authors,
     )
 
 
-def _parse_authors(raw: str) -> list[str]:
-    """Split on ' and ' (case-insensitive) and return canonical 'First Last' names."""
-    if not raw.strip():
-        return []
-    parts = re.split(r'\s+and\s+', raw.strip(), flags=re.IGNORECASE)
+def _parse_authors(raw: str) -> tuple[list[str], bool]:
+    """Split a bib author field into canonical 'First Last' names.
+
+    Returns ``(authors, truncated_authors)`` where ``truncated_authors`` is
+    True when the raw field ended with a "and others" or "et al." marker
+    (BibTeX's standard way of saying the list was truncated).
+
+    Splitting:
+      - Primary: split on ``\\s+and\\s+`` (the BibTeX-standard separator).
+      - Fallback: if the field has zero ``and`` separators but ≥2 commas
+        AND every comma-delimited chunk looks like a Title-cased name,
+        split on commas. This recovers entries that humans / non-BibTeX
+        tools formatted with commas only ("Smith, J., Jones, K.").
+      - Single "Last, First" still parses as one author (the chunk shape
+        check is per-chunk; "Last, First" has 1 comma so it doesn't enter
+        the comma-split branch).
+    """
+    raw = raw.strip()
+    if not raw:
+        return [], False
+
+    truncated = bool(_BIB_AUTHOR_TRUNC_RE.search(raw))
+    if truncated:
+        raw = _BIB_AUTHOR_TRUNC_RE.sub('', raw).strip()
+        if not raw:
+            return [], True
+
+    if re.search(r'\s+and\s+', raw, flags=re.IGNORECASE):
+        parts = re.split(r'\s+and\s+', raw, flags=re.IGNORECASE)
+    else:
+        parts = _split_comma_only_authors(raw)
+
     result = []
     for part in parts:
         part = _strip_latex(part).strip()
@@ -109,13 +148,51 @@ def _parse_authors(raw: str) -> list[str]:
         name = _whitespace_norm(name)
         if name:
             result.append(name)
-    return result
+    return result, truncated
+
+
+def _split_comma_only_authors(raw: str) -> list[str]:
+    """Decide how to split a comma-only author string.
+
+    Returns the list of chunks to feed into the normaliser. Falls back to
+    a single-element list (existing behaviour) when the comma-split shape
+    is ambiguous.
+
+    Heuristics:
+      - 1 comma: ambiguous between "Last, First" (1 author) and
+        "First1 Last1, First2 Last2" (2 authors). Split only when BOTH
+        chunks contain an internal space, signaling each is already a
+        multi-word "First Last".
+      - ≥2 commas: split when every chunk starts with a Title-cased
+        token. A bare "Smith, John" trailing fragment would fail this
+        check and the whole string falls back to the existing logic.
+    """
+    chunks = [c.strip() for c in raw.split(',')]
+    chunks = [c for c in chunks if c]
+    if len(chunks) < 2:
+        return [raw]
+
+    # Every chunk must start with a Title-cased token; otherwise the
+    # comma may be a "Last, First" separator we should not break apart.
+    if not all(_AUTHOR_CHUNK_SHAPE_RE.match(c) for c in chunks):
+        return [raw]
+
+    # Every chunk must contain an internal space — i.e., look like a
+    # multi-word "First Last" name. This rejects:
+    #   - "Smith, John"           (chunk2 has no space)
+    #   - "Smith, John, Jones, K" (chunks 1,2,3,4 single-word)
+    # while accepting:
+    #   - "Alice Smith, Bob Jones, Carol White"
+    if not all(' ' in c for c in chunks):
+        return [raw]
+
+    return chunks
 
 
 def _parse_year(raw: Optional[str]) -> Optional[int]:
     if not raw:
         return None
-    m = re.search(r'\b(1[5-9]\d{2}|20\d{2})\b', raw)
+    m = re.search(r'\b(1[5-9]\d{2}|2[01]\d{2})\b', raw)
     if m:
         return int(m.group(1))
     return None
